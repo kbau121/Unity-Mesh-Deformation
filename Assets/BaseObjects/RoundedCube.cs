@@ -9,6 +9,7 @@ public class RoundedCube : MonoBehaviour
 {
     public int xSize, ySize, zSize;
     public int roundness;
+    public bool colliders = true;
 
     private Mesh mesh;
 
@@ -28,7 +29,11 @@ public class RoundedCube : MonoBehaviour
 
         CreateVertices();
         CreateTriangles();
-        CreateColliders();
+
+        if (colliders)
+        {
+            CreateColliders();
+        }
     }
 
     private void CreateColliders()
