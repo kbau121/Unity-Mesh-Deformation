@@ -1,3 +1,4 @@
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using Unity.VisualScripting;
@@ -9,16 +10,16 @@ public class SoftBody : MonoBehaviour
     public float maxParticles = 8 * 8 * 8;
     public float minParticleDistance = 0.25f;
 
-    public float springForce = 20f;
-    public float dampingForce = 5f;
+    public float springConstant = 20f;
+    public float dampingConstant = 5f;
 
     Mesh deformingMesh;
     Vector3[] originalVertices, deformedVertices;
-    Vector3[] vertexVelocities;
 
-    Vector3[] particles;
+    Vector3[] particles = new Vector3[0], particleVelocities;
+    Spring[] springs = new Spring[0];
 
-    void Start()
+    private void Awake()
     {
         deformingMesh = GetComponent<MeshFilter>().mesh;
 
@@ -29,20 +30,34 @@ public class SoftBody : MonoBehaviour
             deformedVertices[i] = originalVertices[i];
         }
 
-        vertexVelocities = new Vector3[originalVertices.Length];
-
-        // Poisson Disk Distribution for particle position
-        List<Vector3> samples = new List<Vector3>();
-        foreach (Vector3 sample in new PoissonDiscSampler(Vector3.one, 0.1f).Samples())
-        {
-            samples.Add(sample);
-        }
-        particles = samples.ToArray();
+        InitParticles();
+        InitSprings();
     }
 
-    void Update()
+    private void Start()
     {
-        
+
+    }
+
+    private void Update()
+    {
+        foreach (Spring spring in springs)
+        {
+            spring.UpdateVelocities(ref particles, ref particleVelocities, Time.deltaTime);
+        }
+
+        particleVelocities[0] = new Vector3(1, 0, 0);
+
+        for (int i = 0; i < particles.Length; ++i)
+        {
+            UpdateParticle(i);
+        }
+    }
+
+    private void UpdateParticle(int i)
+    {
+        particleVelocities[i] -= dampingConstant * particleVelocities[i] * Time.deltaTime;
+        particles[i] += particleVelocities[i] * Time.deltaTime;
     }
 
     private void OnDrawGizmos()
@@ -51,6 +66,131 @@ public class SoftBody : MonoBehaviour
         foreach (Vector3 particle in particles)
         {
             Gizmos.DrawSphere(transform.TransformPoint(particle), 0.01f);
+        }
+
+        Gizmos.color = Color.green;
+        foreach (Spring spring in springs)
+        {
+            Gizmos.DrawLine(particles[spring.i], particles[spring.j]);
+        }
+    }
+
+    private void InitParticles()
+    {
+        // Poisson Disk Distribution for particle position
+        List<Vector3> samples = new List<Vector3>();
+        foreach (Vector3 sample in new PoissonDiscSampler(Vector3.one, minParticleDistance).Samples())
+        {
+            samples.Add(sample);
+        }
+        particles = samples.ToArray();
+        particleVelocities = new Vector3[samples.Count];
+    }
+
+    private void InitSprings()
+    {
+        Spring.k = springConstant;
+        int springPerParticle = 12;
+
+        List<Spring> springList = new List<Spring>();
+        for (int i = 0; i < particles.Length; i++)
+        {
+            int[] closestParticles = FindClosestParticles(springPerParticle, particles[i], i);
+
+            foreach (int closestParticle in closestParticles)
+            {
+                Spring nextSpring = new Spring(i, closestParticle, ref particles);
+                if (!springList.Contains(nextSpring))
+                {
+                    springList.Add(nextSpring);
+                }
+            }
+        }
+
+        springs = springList.ToArray();
+    }
+
+    private int[] FindClosestParticles(int k, Vector3 target, int targetParticle = -1)
+    {
+        if (particles.Length < k) k = particles.Length;
+
+        int[] closestParticles = new int[k];
+        float[] closestParticleDistances = new float[k];
+        for (int i = 0; i < closestParticles.Length; ++i)
+        {
+            closestParticleDistances[i] = float.PositiveInfinity;
+        }
+
+        for (int i = 0; i < particles.Length; ++i)
+        {
+            if (targetParticle == i) continue;
+
+            float distance = (particles[i] - target).sqrMagnitude;
+
+            if (distance < closestParticleDistances[k - 1])
+            {
+                closestParticles[k - 1] = i;
+                closestParticleDistances[k - 1] = distance;
+
+                for (int j = k - 2; j >= 0; --j)
+                {
+                    if (distance < closestParticleDistances[j])
+                    {
+                        closestParticles[j + 1] = closestParticles[j];
+                        closestParticleDistances[j + 1] = closestParticleDistances[j];
+
+                        closestParticles[j] = i;
+                        closestParticleDistances[j] = distance;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return closestParticles;
+    }
+
+    private class Spring
+    {
+        public static float k = 1f;
+
+        public int i, j;
+        public float length;
+
+        public Spring(int i, int j, ref Vector3[] positions)
+            : this(i, j, (positions[i] - positions[j]).magnitude)
+        { }
+
+        public Spring(int i, int j, float length)
+        {
+            this.i = i;
+            this.j = j;
+            this.length = length;
+        }
+
+        public void UpdateVelocities(ref Vector3[] positions, ref Vector3[] velocities, float deltaTime)
+        {
+            Vector3 offset = positions[j] - positions[i];
+            Vector3 springImpulse = offset.normalized * (offset.magnitude - length) * k * deltaTime;
+
+            velocities[i] += springImpulse;
+            velocities[j] -= springImpulse;
+        }
+
+        public override bool Equals(object obj)
+        {
+            if ((obj == null) || !this.GetType().Equals(obj.GetType())) return false;
+
+            Spring other = (Spring)obj;
+
+            bool sameParticles =
+                (other.i == i && other.j == j) ||
+                (other.i == j && other.j == i);
+
+            return sameParticles && other.length == length;
         }
     }
 
@@ -81,20 +221,20 @@ public class SoftBody : MonoBehaviour
         public IEnumerable<Vector3> Samples()
         {
             yield return AddSample(new Vector3(
-                Random.value * box.size.x,
-                Random.value * box.size.y,
-                Random.value * box.size.z));
+                UnityEngine.Random.value * box.size.x,
+                UnityEngine.Random.value * box.size.y,
+                UnityEngine.Random.value * box.size.z));
 
             while (activeSamples.Count > 0)
             {
-                int i = (int)Random.value * activeSamples.Count;
+                int i = (int)UnityEngine.Random.value * activeSamples.Count;
                 Vector3 sample = activeSamples[i];
 
                 bool found = false;
                 for (int j = 0; j < k; ++j)
                 {
-                    Vector3 d = Random.onUnitSphere;
-                    float r = Mathf.Sqrt(Random.value * 3 * radius2 + radius2);
+                    Vector3 d = UnityEngine.Random.onUnitSphere;
+                    float r = Mathf.Sqrt(UnityEngine.Random.value * 3 * radius2 + radius2);
                     Vector3 candidate = sample + r * d;
 
                     if (box.contains(candidate) && IsFarEnough(candidate))
