@@ -1,7 +1,5 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using Unity.VisualScripting;
 using UnityEngine;
 
 [RequireComponent(typeof(MeshFilter))]
@@ -43,20 +41,34 @@ public class SoftBody : MonoBehaviour
 
     private void Update()
     {
+        Vector3 averagePosition = Vector3.zero;
+        foreach (Particle particle in particles)
+        {
+            averagePosition += particle.position;
+        }
+        averagePosition /= particles.Length;
+
+        foreach (Particle particle in particles)
+        {
+            particle.localPosition = particle.position - averagePosition;
+        }
+        transform.position = averagePosition;
+
         for (int i = 0; i < originalVertices.Length; ++i)
         {
-            Vector3 newVertex = Vector3.zero;
+            Vector3 newVertex = originalVertices[i];
 
             foreach (Particle particle in particles)
             {
-                particle.UpdateVertex(ref newVertex, i, ref originalVertices);
+                particle.UpdateVertex(ref newVertex, i);
             }
 
-            deformedVertices[i] = newVertex;
+            deformedVertices[i] = transform.InverseTransformPoint(newVertex);
         }
 
         deformingMesh.vertices = deformedVertices;
         deformingMesh.RecalculateNormals();
+        deformingMesh.RecalculateBounds();
     }
 
     private void FixedUpdate()
@@ -66,9 +78,16 @@ public class SoftBody : MonoBehaviour
             spring.ApplyImpulse(ref particles);
         }
 
+        Vector3 averageVelocity = Vector3.zero;
         foreach (Particle particle in particles)
         {
-            particle.Impulse(dampingConstant * -particle.velocity);
+            averageVelocity += particle.velocity;
+        }
+        averageVelocity /= particles.Length;
+
+        foreach (Particle particle in particles)
+        {
+            particle.Impulse(dampingConstant * (averageVelocity - particle.velocity));
         }
     }
 
@@ -150,9 +169,29 @@ public class SoftBody : MonoBehaviour
 
         for (int i = 0; i < originalVertices.Length; ++i)
         {
-            int[] closestParticles = FindClosestParticles(1, originalVertices[i]);
+            int[] closestParticles = FindClosestParticles(5, originalVertices[i]);
 
-            weights[closestParticles[0]].Add(new KeyValuePair<int, float>(i, 1f));
+            float weightSum = 0f;
+            foreach (int closestParticle in closestParticles)
+            {
+                float distance = (originalVertices[i] - particles[closestParticle].position).magnitude;
+                if (distance < 0.0001f) distance = 0.0001f;
+
+                float weight = 1 / distance;
+
+                weights[closestParticle].Add(new KeyValuePair<int, float>(i, weight));
+                weightSum += weight;
+            }
+
+            foreach (int closestParticle in closestParticles)
+            {
+                int lastIndex = weights[closestParticle].Count - 1;
+
+                int vertexIndex = weights[closestParticle][lastIndex].Key;
+                float normalizedWeight = weights[closestParticle][lastIndex].Value / weightSum;
+
+                weights[closestParticle][lastIndex] = new KeyValuePair<int, float>(vertexIndex, normalizedWeight);
+            }
         }
 
         for (int i = 0; i < particles.Length; ++i) {
@@ -212,6 +251,11 @@ public class SoftBody : MonoBehaviour
             set { _gameObject.transform.position = value; }
         }
 
+        public Vector3 localPosition {
+            get { return _gameObject.transform.localPosition; }
+            set { _gameObject.transform.localPosition = value; }
+        }
+
         public Vector3 velocity
         {
             get { return _rigidbody.velocity; }
@@ -246,6 +290,7 @@ public class SoftBody : MonoBehaviour
             _collider = _gameObject.AddComponent<SphereCollider>();
             _boundWeights = new Dictionary<int, float>();
 
+            _gameObject.layer |= LayerMask.NameToLayer("Soft Body");
             _gameObject.transform.position = position;
             if (parent)
             {
@@ -262,12 +307,11 @@ public class SoftBody : MonoBehaviour
             _rigidbody.AddForce(force, ForceMode.Impulse);
         }
 
-        public void UpdateVertex(ref Vector3 vertex, int index, ref Vector3[] originalVertices)
+        public void UpdateVertex(ref Vector3 vertex, int index)
         {
             if (!_boundWeights.ContainsKey(index)) return;
 
-            // sum(w * LTW * B) * orig
-            vertex += _boundWeights[index] * (_gameObject.transform.position - _boundTranslation) + originalVertices[index];
+            vertex += _boundWeights[index] * (_gameObject.transform.position - _boundTranslation);
         }
 
         public void BindVertices(KeyValuePair<int, float>[] weights)
