@@ -12,6 +12,8 @@ public class SoftBody : MonoBehaviour
     public float springConstant = 5f;
     public float dampingConstant = 0.025f;
 
+    public Vector3 size = Vector3.one;
+
     Mesh deformingMesh;
     Vector3[] originalVertices, deformedVertices;
 
@@ -31,11 +33,30 @@ public class SoftBody : MonoBehaviour
 
         InitParticles();
         InitSprings();
+        BindMesh();
     }
 
     private void Start()
     {
 
+    }
+
+    private void Update()
+    {
+        for (int i = 0; i < originalVertices.Length; ++i)
+        {
+            Vector3 newVertex = Vector3.zero;
+
+            foreach (Particle particle in particles)
+            {
+                particle.UpdateVertex(ref newVertex, i, ref originalVertices);
+            }
+
+            deformedVertices[i] = newVertex;
+        }
+
+        deformingMesh.vertices = deformedVertices;
+        deformingMesh.RecalculateNormals();
     }
 
     private void FixedUpdate()
@@ -45,15 +66,10 @@ public class SoftBody : MonoBehaviour
             spring.ApplyImpulse(ref particles);
         }
 
-        for (int i = 0; i < particles.Length; ++i)
+        foreach (Particle particle in particles)
         {
-            UpdateParticle(i);
+            particle.Impulse(dampingConstant * -particle.velocity);
         }
-    }
-
-    private void UpdateParticle(int i)
-    {
-        particles[i].Impulse(dampingConstant * -particles[i].velocity);
     }
 
     private void OnDrawGizmos()
@@ -77,7 +93,7 @@ public class SoftBody : MonoBehaviour
 
         // Poisson Disk Distribution for particle position
         List<Particle> particleList = new List<Particle>();
-        foreach (Vector3 sample in new PoissonDiscSampler(Vector3.one, minParticleDistance).Samples())
+        foreach (Vector3 sample in new PoissonDiscSampler(size, minParticleDistance).Samples())
         {
             particleList.Add(new Particle(sample, radius, transform));
         }
@@ -122,6 +138,26 @@ public class SoftBody : MonoBehaviour
         }
 
         springs = springList.ToArray();
+    }
+
+    private void BindMesh()
+    {
+        List<KeyValuePair<int, float>>[] weights = new List<KeyValuePair<int, float>>[particles.Length];
+        for (int i = 0; i < weights.Length; ++i)
+        {
+            weights[i] = new List<KeyValuePair<int, float>>();
+        }
+
+        for (int i = 0; i < originalVertices.Length; ++i)
+        {
+            int[] closestParticles = FindClosestParticles(1, originalVertices[i]);
+
+            weights[closestParticles[0]].Add(new KeyValuePair<int, float>(i, 1f));
+        }
+
+        for (int i = 0; i < particles.Length; ++i) {
+            particles[i].BindVertices(weights[i].ToArray());
+        }
     }
 
     private int[] FindClosestParticles(int k, Vector3 target, int targetParticle = -1)
@@ -198,6 +234,9 @@ public class SoftBody : MonoBehaviour
         private Rigidbody _rigidbody;
         private SphereCollider _collider;
 
+        private Dictionary<int, float> _boundWeights;
+        private Vector3 _boundTranslation;
+
         public Particle() : this(Vector3.zero, 0f) { }
 
         public Particle(Vector3 position, float radius, Transform parent = null)
@@ -205,6 +244,7 @@ public class SoftBody : MonoBehaviour
             _gameObject = new GameObject(String.Format("Particle{0}", _ID++));
             _rigidbody = _gameObject.AddComponent<Rigidbody>();
             _collider = _gameObject.AddComponent<SphereCollider>();
+            _boundWeights = new Dictionary<int, float>();
 
             _gameObject.transform.position = position;
             if (parent)
@@ -220,6 +260,20 @@ public class SoftBody : MonoBehaviour
         public void Impulse(Vector3 force)
         {
             _rigidbody.AddForce(force, ForceMode.Impulse);
+        }
+
+        public void UpdateVertex(ref Vector3 vertex, int index, ref Vector3[] originalVertices)
+        {
+            if (!_boundWeights.ContainsKey(index)) return;
+
+            // sum(w * LTW * B) * orig
+            vertex += _boundWeights[index] * (_gameObject.transform.position - _boundTranslation) + originalVertices[index];
+        }
+
+        public void BindVertices(KeyValuePair<int, float>[] weights)
+        {
+            _boundWeights = new Dictionary<int, float>(weights);
+            _boundTranslation = _gameObject.transform.position;
         }
     }
 
